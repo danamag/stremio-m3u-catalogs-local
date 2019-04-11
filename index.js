@@ -1,4 +1,6 @@
-const modules = require('./modules')
+const m3u = require('m3u8-reader')
+const needle = require('needle')
+const { config } = require('internal')
 
 const defaults = {
 	name: 'M3U Playlists - Catalogs',
@@ -31,8 +33,7 @@ function getM3U(idx, url) {
 			resolve(m3us[url])
 			return 
 		}
-		const m3u = modules.get['m3u8-reader']
-		modules.get.needle.get(url, (err, resp, body) => {
+		needle.get(url, (err, resp, body) => {
 			if (!err && body) {
 				const playlist = m3u(body)
 				const metas = []
@@ -61,89 +62,87 @@ function getM3U(idx, url) {
 	})
 }
 
-module.exports = {
-	manifest: local => {
-		modules.set(local.modules)
-		const config = local.config
-
-		const catalogs = []
-		for (let i = 1; i < 6; i++)
-			if (config['m3u_url_'+i])
-				catalogs.push({
-					name: config['m3u_name_'+i] || ('Unnamed #' + i),
-					id: defaults.prefix + 'cat_' + i,
-					type: 'tv',
-					extra: [ { name: 'search' }, { name: 'skip' } ]
-				})
-
-		return Promise.resolve({
-			id: 'org.' + defaults.name.toLowerCase().replace(/[^a-z]+/g,''),
-			version: '1.0.0',
-			name: defaults.name,
-			description: 'Creates catalogs based on M3U Playlists. Add M3U playlists to Stremio by URL, supports a maximum of 5 playlists and custom names',
-			resources: ['stream', 'meta', 'catalog'],
-			types: ['tv', 'channel'],
-			idPrefixes: [defaults.prefix],
-			icon: defaults.icon,
-			catalogs
+const catalogs = []
+for (let i = 1; i < 6; i++)
+	if (config['m3u_url_'+i])
+		catalogs.push({
+			name: config['m3u_name_'+i] || ('Unnamed #' + i),
+			id: defaults.prefix + 'cat_' + i,
+			type: 'tv',
+			extra: [ { name: 'search' }, { name: 'skip' } ]
 		})
-	},
-	handler: (args, local) => {
-		modules.set(local.modules)
-		const persist = local.persist
-		const config = local.config
+
+const { addonBuilder, getInterface, getRouter } = require('stremio-addon-sdk')
+
+const builder = new addonBuilder({
+	id: 'org.' + defaults.name.toLowerCase().replace(/[^a-z]+/g,''),
+	version: '1.0.0',
+	name: defaults.name,
+	description: 'Creates catalogs based on M3U Playlists. Add M3U playlists to Stremio by URL, supports a maximum of 5 playlists and custom names',
+	resources: ['stream', 'meta', 'catalog'],
+	types: ['tv', 'channel'],
+	idPrefixes: [defaults.prefix],
+	icon: defaults.icon,
+	catalogs
+})
+
+builder.defineCatalogHandler(args => {
+	return new Promise((resolve, reject) => {
 		const extra = args.extra || {}
 		const skip = parseInt(extra.skip || 0)
-
-	    if (!args.id)
-	        return Promise.reject(new Error(defaults.name + ' - No ID Specified'))
-
-		return new Promise((resolve, reject) => {
-
-			if (args.resource == 'catalog') {
-				const extra = args.extra || {}
-				const id = args.id.replace(defaults.prefix + 'cat_', '')
-				getM3U(id, config['m3u_url_'+id]).then(metas => {
-					if (!metas.length)
-						reject(defaults.name + ' - Could not get items from M3U playlist: ' + args.id)
-					else {
-						if (!extra.search)
-							resolve({ metas: metas.slice(skip, skip + defaults.paginate) })
-						else {
-							let results = []
-							metas.forEach(meta => {
-								if (meta.name.toLowerCase().includes(extra.search.toLowerCase()))
-									results.push(meta)
-							})
-							if (results.length)
-								resolve({ metas: results })
-							else
-								reject(defaults.name + ' - No search results for: ' + extra.search)
-						}
-					}
-				})
-
-			} else if (args.resource == 'meta') {
-				const i = args.id.replace(defaults.prefix + 'url_', '').split('_')[0]
-				getM3U(i, config['m3u_url_'+i]).then(metas => {
-					let meta
-					metas.some(el => {
-						if (el.id == args.id) {
-							meta = el
-							return true
-						}
+		const id = args.id.replace(defaults.prefix + 'cat_', '')
+		getM3U(id, config['m3u_url_'+id]).then(metas => {
+			if (!metas.length)
+				reject(defaults.name + ' - Could not get items from M3U playlist: ' + args.id)
+			else {
+				if (!extra.search)
+					resolve({ metas: metas.slice(skip, skip + defaults.paginate) })
+				else {
+					let results = []
+					metas.forEach(meta => {
+						if (meta.name.toLowerCase().includes(extra.search.toLowerCase()))
+							results.push(meta)
 					})
-					if (meta)
-						resolve({ meta })
+					if (results.length)
+						resolve({ metas: results })
 					else
-						reject(defaults.name + ' - Could not get meta item for: ' + args.id)
-				}).catch(err => {
-					reject(err)
-				})
-			} else if (args.resource == 'stream') {
-				const url = decodeURIComponent(atob(args.id.replace(defaults.prefix + 'url_', '').split('_')[1]))
-				resolve({ streams: [{ url }] })
+						reject(defaults.name + ' - No search results for: ' + extra.search)
+				}
 			}
+		}).catch(err => {
+			reject(err)
 		})
-	}
-}
+	})
+})
+
+builder.defineMetaHandler(args => {
+	return new Promise((resolve, reject) => {
+		const i = args.id.replace(defaults.prefix + 'url_', '').split('_')[0]
+		getM3U(i, config['m3u_url_'+i]).then(metas => {
+			let meta
+			metas.some(el => {
+				if (el.id == args.id) {
+					meta = el
+					return true
+				}
+			})
+			if (meta)
+				resolve({ meta })
+			else
+				reject(defaults.name + ' - Could not get meta item for: ' + args.id)
+		}).catch(err => {
+			reject(err)
+		})
+	})
+})
+
+builder.defineStreamHandler(args => {
+	return new Promise((resolve, reject) => {
+		const url = decodeURIComponent(atob(args.id.replace(defaults.prefix + 'url_', '').split('_')[1]))
+		resolve({ streams: [{ url }] })
+	})
+})
+
+const addonInterface = getInterface(builder)
+
+module.exports = getRouter(addonInterface)
